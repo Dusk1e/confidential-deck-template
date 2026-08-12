@@ -15,6 +15,8 @@ contract Blackjack is ConfidentialDeck {
     uint16 private constant DECK = 52;
     uint16 private constant DEALER_CARDS = 9; // enough to always reach 17
     uint16 private constant MAX_PLAYER_CARDS = 11;
+    /// @dev Bounds every pending player action, not just the reveal: a hand the
+    ///      player abandons must not pin the bankroll open forever.
     uint256 public constant REVEAL_TIMEOUT = 1 hours;
 
     enum State { Idle, PlayerTurn, Revealing, Done }
@@ -75,6 +77,7 @@ contract Blackjack is ConfidentialDeck {
         }
 
         state = State.PlayerTurn;
+        revealDeadline = block.timestamp + REVEAL_TIMEOUT;
         emit GameStarted(msg.sender, msg.value);
     }
 
@@ -82,6 +85,7 @@ contract Blackjack is ConfidentialDeck {
     function hit() external onlyPlayer inState(State.PlayerTurn) {
         require(playerCards.length < MAX_PLAYER_CARDS, "hand full");
         playerCards.push(_dealFaceUp()); // KIT: public
+        revealDeadline = block.timestamp + REVEAL_TIMEOUT; // player is active; extend the clock
         emit PlayerHit(playerCards.length);
     }
 
@@ -133,8 +137,14 @@ contract Blackjack is ConfidentialDeck {
         emit Settled(pt, dt, outcome, payout);
     }
 
-    /// @notice House keeps the pot if no one settles in time.
-    function houseTimeout() external inState(State.Revealing) {
+    /// @notice House keeps the pot if the hand stalls: either the player never
+    ///         stands, or no one settles after they do. Without the PlayerTurn
+    ///         case a walked-away hand would pin the bankroll open forever,
+    ///         since every other way out of PlayerTurn is `onlyPlayer`.
+    function houseTimeout() external {
+        if (state != State.PlayerTurn && state != State.Revealing) {
+            revert WrongState(State.Revealing, state);
+        }
         require(block.timestamp >= revealDeadline, "not timed out");
         state = State.Done; // bet stays with the house
         emit Settled(0, 0, "timeout", 0);

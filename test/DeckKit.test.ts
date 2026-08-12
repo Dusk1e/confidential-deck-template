@@ -141,4 +141,31 @@ describe("Blackjack (Inco covalidator)", function () {
     await tx((await at(player)).write.deal({ value: bet, account: player.account }));
     expect(Number(await game.read.state())).to.equal(1); // PlayerTurn again
   });
+
+  it("lets the house reclaim a hand the player walked away from", async function () {
+    const game = await hre.viem.deployContract("Blackjack", []);
+    const at = (w: WalletClient) =>
+      hre.viem.getContractAt("Blackjack", game.address, { client: { wallet: w } });
+
+    await tx(house.sendTransaction({ to: game.address, value: parseEther("1"), account: house.account, chain: null }));
+    const bankroll = await pub.getBalance({ address: game.address });
+
+    // A player opens a hand for the smallest possible bet and never acts again.
+    await tx((await at(player)).write.deal({ value: 1n, account: player.account }));
+    expect(Number(await game.read.state())).to.equal(1); // PlayerTurn
+
+    // Well past the timeout window.
+    await hre.network.provider.request({ method: "evm_increaseTime", params: [7200] });
+    await hre.network.provider.request({ method: "evm_mine", params: [] });
+
+    // The house must be able to close an abandoned hand, or the bankroll is stuck forever.
+    await tx((await at(house)).write.houseTimeout({ account: house.account }));
+    expect(Number(await game.read.state())).to.equal(3); // Done
+
+    // ...and the table is usable again.
+    await tx((await at(player)).write.deal({ value: parseEther("0.05"), account: player.account }));
+    expect(Number(await game.read.state())).to.equal(1);
+    const left = await pub.getBalance({ address: game.address });
+    expect(left > bankroll / 2n, "bankroll must survive the abandoned hand").to.equal(true);
+  });
 });
